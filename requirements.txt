@@ -1,0 +1,8 @@
+torch>=2.2
+nnsight>=0.3.0,<0.4.0
+transformers>=4.40
+datasets>=2.19
+tqdm
+einops
+wandb
+git+https://github.com/saprmarks/dictionary_learning.git
