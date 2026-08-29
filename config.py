@@ -1,6 +1,7 @@
 """All the knobs for the Matryoshka SAE run in one place."""
 
 from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass
@@ -45,3 +46,8 @@ class Config:
     log_every: int = 50
     save_dir: str = "./checkpoints/gpt2_small_layer6_matryoshka"
     device: str = "cuda"
+
+    # --- wandb (opt-in, set via --wandb) ---
+    use_wandb: bool = False
+    wandb_project: str = "matryoshka-sae-gpt2"
+    wandb_run_name: Optional[str] = None

@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 import torch as t
+import wandb
 from nnsight import LanguageModel
 
 from dictionary_learning.buffer import ActivationBuffer
@@ -104,6 +105,14 @@ def main(cfg: Config):
     )
     print("Trainer config:", trainer.config)
 
+    if cfg.use_wandb:
+        wandb.init(
+            project=cfg.wandb_project,
+            name=cfg.wandb_run_name,
+            config={**trainer.config, "norm_factor": norm_factor, "dataset_name": cfg.dataset_name,
+                    "target_tokens": cfg.target_tokens, "max_train_hours": cfg.max_train_hours},
+        )
+
     start_time = time.time()
     deadline = start_time + cfg.max_train_hours * 3600
     last_checkpoint_time = start_time
@@ -156,6 +165,18 @@ def main(cfg: Config):
                     msg += f" | ~{tok_per_sec:,.0f} tok/s | projected total @ deadline ~{eta_tokens / 1e6:,.0f}M tok"
                 print(msg)
 
+                if cfg.use_wandb:
+                    wandb_log = {f"train/{k}": v for k, v in logs.losses.items()}
+                    wandb_log.update({
+                        "train/l0": l0,
+                        "train/dead_features": trainer.dead_features,
+                        "train/tokens_seen": tokens_seen,
+                        "train/elapsed_min": elapsed / 60,
+                    })
+                    if elapsed > 0 and step > 0:
+                        wandb_log["train/tokens_per_sec"] = tok_per_sec
+                    wandb.log(wandb_log, step=step)
+
             if now - last_checkpoint_time >= cfg.checkpoint_every_minutes * 60:
                 save_checkpoint(trainer, save_dir, step, tokens_seen, norm_factor, tag="latest")
                 last_checkpoint_time = now
@@ -163,6 +184,8 @@ def main(cfg: Config):
             step += 1
     finally:
         save_checkpoint(trainer, save_dir, step, tokens_seen, norm_factor, tag="final")
+        if cfg.use_wandb:
+            wandb.finish()
         print("Done.")
 
 
@@ -173,9 +196,18 @@ if __name__ == "__main__":
         action="store_true",
         help="~3 minute dry run (tiny token budget + time cap) to validate the pipeline before committing GPU hours.",
     )
+    parser.add_argument("--wandb", action="store_true", help="Log metrics to Weights & Biases.")
+    parser.add_argument("--wandb_project", type=str, default=None, help="Overrides config.py's wandb_project.")
+    parser.add_argument("--wandb_run_name", type=str, default=None, help="Overrides config.py's wandb_run_name.")
     args = parser.parse_args()
 
     cfg = Config()
+    cfg.use_wandb = args.wandb
+    if args.wandb_project:
+        cfg.wandb_project = args.wandb_project
+    if args.wandb_run_name:
+        cfg.wandb_run_name = args.wandb_run_name
+
     if args.smoke_test:
         cfg.target_tokens = 200_000
         cfg.max_train_hours = 0.05  # 3 minutes
