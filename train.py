@@ -19,6 +19,7 @@ from nnsight import LanguageModel
 
 from dictionary_learning.buffer import ActivationBuffer
 from dictionary_learning.trainers.matryoshka_batch_top_k import MatryoshkaBatchTopKTrainer
+from dictionary_learning.training import get_norm_factor
 
 from config import Config
 from data import stream_text
@@ -32,13 +33,14 @@ def _handle_stop(signum, frame):
     _STOP = True
 
 
-def save_checkpoint(trainer, save_dir: Path, step: int, tokens_seen: int, tag: str):
+def save_checkpoint(trainer, save_dir: Path, step: int, tokens_seen: int, norm_factor: float, tag: str):
     ae_path = save_dir / f"ae_{tag}.pt"
     t.save({k: v.cpu() for k, v in trainer.ae.state_dict().items()}, ae_path)
     t.save(
         {
             "step": step,
             "tokens_seen": tokens_seen,
+            "norm_factor": norm_factor,
             "optimizer": trainer.optimizer.state_dict(),
             "config": trainer.config,
         },
@@ -78,6 +80,10 @@ def main(cfg: Config):
         device=cfg.device,
     )
 
+    print("Calibrating activation norm factor (matches dictionary_learning's normalize_activations)...")
+    norm_factor = get_norm_factor(buffer, steps=100)
+    print(f"norm_factor = {norm_factor:.3f} (dividing every activation batch by this before training)")
+
     est_steps = max(cfg.target_tokens // cfg.batch_size, cfg.warmup_steps + 1)
 
     trainer = MatryoshkaBatchTopKTrainer(
@@ -112,7 +118,7 @@ def main(cfg: Config):
     )
 
     try:
-        for act in buffer:
+        for raw_act in buffer:
             now = time.time()
             if now >= deadline:
                 print(f"Hit {cfg.max_train_hours}h wall-clock cap at step {step}. Stopping.")
@@ -123,6 +129,8 @@ def main(cfg: Config):
             if _STOP:
                 print("Stop signal received. Stopping.")
                 break
+
+            act = raw_act / norm_factor
 
             if autocast_ctx is not None:
                 with autocast_ctx:
@@ -149,12 +157,12 @@ def main(cfg: Config):
                 print(msg)
 
             if now - last_checkpoint_time >= cfg.checkpoint_every_minutes * 60:
-                save_checkpoint(trainer, save_dir, step, tokens_seen, tag="latest")
+                save_checkpoint(trainer, save_dir, step, tokens_seen, norm_factor, tag="latest")
                 last_checkpoint_time = now
 
             step += 1
     finally:
-        save_checkpoint(trainer, save_dir, step, tokens_seen, tag="final")
+        save_checkpoint(trainer, save_dir, step, tokens_seen, norm_factor, tag="final")
         print("Done.")
 
 

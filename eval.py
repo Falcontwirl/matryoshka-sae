@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+from pathlib import Path
 
 import torch as t
 from nnsight import LanguageModel
@@ -22,9 +23,28 @@ from config import Config
 from data import stream_text
 
 
+def load_norm_factor(checkpoint_path: str) -> float:
+    """The ae_*.pt checkpoint has no norm_factor of its own -- it's saved
+    alongside in the companion trainer_state_*.pt file, since training
+    divides every activation by it before encoding. Must be reapplied here
+    or L0/reconstruction metrics on a freshly-loaded checkpoint are computed
+    against the wrong scale entirely."""
+    ae_path = Path(checkpoint_path)
+    state_path = ae_path.with_name(ae_path.name.replace("ae_", "trainer_state_", 1))
+    if not state_path.exists():
+        print(f"WARNING: no companion {state_path.name} found next to {ae_path.name}; "
+              f"assuming norm_factor=1.0, which is almost certainly wrong. Results below are unreliable.")
+        return 1.0
+    norm_factor = t.load(state_path, map_location="cpu")["norm_factor"]
+    print(f"norm_factor = {norm_factor:.3f} (loaded from {state_path.name})")
+    return norm_factor
+
+
 def main(checkpoint_path: str, n_batches: int):
     cfg = Config()
     device = cfg.device
+
+    norm_factor = load_norm_factor(checkpoint_path)
 
     ae = MatryoshkaBatchTopKSAE.from_pretrained(checkpoint_path, device=device)
     ae.eval()
@@ -59,7 +79,8 @@ def main(checkpoint_path: str, n_batches: int):
     var_explained_by_level = [0.0] * n_levels
 
     with t.no_grad():
-        for _, act in zip(range(n_batches), buffer):
+        for _, raw_act in zip(range(n_batches), buffer):
+            act = raw_act / norm_factor
             f, _active_F, _ = ae.encode(act, return_active=True, use_threshold=False)
             l0_total += (f != 0).float().sum(dim=-1).mean().item()
 
